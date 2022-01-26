@@ -1,0 +1,660 @@
+---
+title: "Covid-19 Analysis"
+author: "Tittiwat Tonburinthip"
+date: "9/7/2021"
+output:
+  pdf_document: default
+  fontsize: 16 pt
+  html_document: default
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(RSQLite)
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+#library(data.table)
+#library(scales)
+library(usmap)
+library(knitr)
+```
+
+# COVID-19
+coronavirus 2019 also known as COVID-19 is a contagious disease caused by severe acute respiratory syndrome coronavirus 2 (SARS-CoV-2). The first known case was identified in Wuhan, China in December 2019. The disease has since spread worldwide, leading to an ongoing pandemic. In this analysis, I set the list of questions as followed. (https://en.wikipedia.org/wiki/COVID-19)
+
+  1.    The *number of Covid-19* patients in each country, each day, and its trend
+  2.    In the US, which has the states that have *top 10 cases* per thousand?
+  3.    Which is the areas that have *top 10 dead rates* per thousand?
+  4.    How many people get fully vaccinated in each state?
+  5.    What are the *factors* that have an *impact* on the number of Covid-19 cases and dead rates?
+  
+  
+
+## Collect data
+
+* The Covid-19 data in this analysis are from JOHN HOPKINS University of Medicine
+
+```{r get_jhu_data, warning=FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+file_names <- c("confirmed_global.csv",
+                    "deaths_global.csv",
+                    "confirmed_US.csv",
+                    "deaths_US.csv")
+urls <- str_c(url_in,file_names)
+```
+
+## There are 6 parts.
+
+  1.    global_cases is the data of Covid-19 cases from all countries around the world.
+  2.    global_deaths is the data of the number of dead Covid-19 patients from all countries around the world.
+  3.    US_cases is the data of Covid-19 cases in the US.
+  4.    US_deaths is the data of the number of dead Covid-19 patients in the US.
+  5.    vac_data is the data of daily vaccination in the US from https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/vaccinations/us_state_vaccinations.csv
+  6.    area is the data of area in each state in the US from https://raw.githubusercontent.com/jakevdp/data-USstates/master/state-areas.csv
+
+```{r read_in_data, warning=FALSE, message=FALSE}
+global_cases <- read_csv(urls[1], show_col_types = FALSE)
+global_deaths <- read_csv(urls[2], show_col_types = FALSE) 
+US_cases <- read_csv(urls[3],show_col_types = FALSE)
+US_deaths <- read_csv(urls[4], show_col_types = FALSE)
+vac_data<- read_csv('https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/vaccinations/us_state_vaccinations.csv')
+area<-read_csv('https://raw.githubusercontent.com/jakevdp/data-USstates/master/state-areas.csv')
+
+
+```
+
+# Cleaning data
+  * Use pivot_longer with the global_cases dataframe to get date from the name of columns. Then, they were stored in the table as records and the column was named as "date".
+
+```{r global_cases}
+global_cases <- global_cases %>%
+    pivot_longer(cols=-c('Province/State','Country/Region','Lat','Long'),
+                 names_to = 'date', values_to = 'cases')%>%
+    mutate(date=parse_date(date, format='%m/%d/%y'))%>%
+    select(-c(Lat,Long))
+
+  
+```
+   * Use pivot_longer with the global_deaths dataframe to get date from the name of columns. Then, they were stored in the table as records and the column was named as "date".
+
+```{r global_death}
+global_deaths=global_deaths%>%
+    pivot_longer(cols=-c('Province/State','Country/Region','Lat','Long'),
+                 names_to = 'date', values_to = 'deaths')%>%
+    mutate(date=parse_date(date, format='%m/%d/%y'))%>%
+    select(-c(Lat,Long))
+
+```
+
+  * Use full join between the global_cases dataframe and global_deaths dataframe and named it as global_dc dataframe.
+```{r fulljoint, message=FALSE}
+global_dc<-global_cases%>%
+  full_join(global_deaths)%>%
+  rename('Province_State'='Province/State', 'Country_Region'='Country/Region')
+
+
+```
+  * Check all data in global_dc with summary function.
+```{r summary}
+summary(global_dc)
+
+```
+  * Use pivot_longer with the US_cases dataframe to get date from the name of columns. Then, they were stored in the table as records and the column was named as date.
+```{r US_cases}
+US_cases<-US_cases%>%
+  pivot_longer(cols=-c(UID:Combined_Key), 
+               names_to='date', values_to='cases')%>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+```
+
+  * Use pivot_longer with the US_deaths dataframe to get date from the name of columns. Then, they were stored in the table as records and the column was named as date.
+```{r US_deaths}
+US_deaths<-US_deaths%>%
+  pivot_longer(cols=-c(UID:Population), 
+               names_to='date', values_to='deaths')%>%
+  select(Admin2:deaths) %>%
+  mutate(date = parse_date(date, format='%m/%d/%y'))%>%
+  select(-c(Lat, Long_))
+
+```
+  
+  * Connect the US_cases and US_deaths with full join function.
+  
+```{r US_dc}
+US_dc<-US_cases%>%
+  full_join(US_deaths)
+```
+
+```{r US_dc_combine, echo=FALSE}
+US_dc<- US_dc%>%
+  unite("Combined_Key", c(Province_State, Country_Region), 
+        sep=',', na.rm=TRUE, remove= FALSE)
+
+
+```
+
+  * Get population data via "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+```{r UID, warning=FALSE, message=FALSE}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+```
+  * global_dc, which store the number of cases and deaths from Covid-19 connected with uid with left join function.
+  
+```{r US_dc_UID}
+global_dc<- global_dc%>%
+  left_join(uid, by=c("Province_State","Country_Region"))%>%
+    select(-c(UID, FIPS))
+```
+
+# Analyze the data
+
+  *  create new columns which are "new_cases" and "new_deaths" because the data in "cases" column and "deaths" column store data as the cumulative number of cases and dead people. 
+```{r new_cases_new_deaths}
+US_dc<- US_dc%>%
+  mutate(new_cases=cases-lag(cases), new_deaths=deaths-lag(deaths))%>%
+  na.omit()
+```
+
+```{r US_dc_UID_summary, results='hide', echo=FALSE}
+summary(US_dc)
+
+```
+  * Group US_dc by country regions and date
+  * "cases" is the summation of "new_cases" 
+  * "deaths" is the summation of "new_deaths"
+  * Create two new column
+    *   death_per_mill= deaths / population
+    *   case_per_mill=cases / population
+  * All data were stored in US_dc_1 
+  
+```{r Data_prepare_plot, message=FALSE,warning=FALSE}
+US_dc_1<-US_dc%>%
+  group_by(Country_Region,date)%>%
+  summarise(cases=sum(new_cases), deaths=sum(new_deaths), 
+            Population=max(Population))%>%
+  mutate(death_per_mill=deaths*1000000/Population, 
+         case_per_mill=cases*1000000/Population)
+
+
+
+```
+
+```{r Vac_data_uid, echo=FALSE}
+vac_data$location[vac_data$location=='New York State']='New York'
+
+#link with population
+uid_by_state<- uid %>%
+  filter(Country_Region=='US',Province_State!='Diamond Princess', Province_State!='Federal Bureau of Prisons',Province_State!='Grand Princess',Province_State!= 'Recovered', Province_State!='US Military', Province_State!='Veteran Hospitals')%>%
+  select(-c(UID,FIPS))%>%
+  group_by(Province_State)%>%
+  summarise(sum_pop=max(Population, na.rm= TRUE))%>%
+  na.omit()
+
+#To remove -Inf
+uid_by_state=uid_by_state[uid_by_state$sum_pop!=-Inf,]
+
+
+#Vac_data=cumulative be careful
+vac_data_uid<-vac_data%>%
+  rename(Province_State='location')%>%
+  left_join(uid_by_state)
+
+vac_data_uid_1<-vac_data_uid%>%
+  na.omit()%>%
+  group_by(Province_State)%>%
+  summarise(percent_vaccine=max(people_fully_vaccinated, na.rm = TRUE)/sum_pop*100, people_fully_vaccinated=max(people_fully_vaccinated, na.rm = TRUE), population=max(sum_pop, na.rm=TRUE))
+
+
+
+
+#percent_vaccine
+vac_data_uid_2=distinct(vac_data_uid_1,Province_State,percent_vaccine,people_fully_vaccinated,population)
+
+
+
+
+
+```
+  * Group vac_data that collect about Covid-19 vaccination by date
+  * Then, create new column named "us_daily_vaccinations" by calculating the total of daily vaccination in each day.
+  
+```{r Vac_data_1}
+vac_data_1<-vac_data%>%
+  group_by(date)%>%
+  summarise(us_daily_vaccinations=sum(daily_vaccinations,na.rm = TRUE))
+
+```
+
+
+# Plot
+## The US case
+
+  * To answer the first question, the data US_dc_1 was plotted in line, which its x-axis is date and its y-axis is the number of covid-19 cases.
+  * geom_line and geom_point were used.
+  * vac_data_1 was plotted as line as well. Its x-axis was date and y-axis was the number of daily vaccination.
+  * The data informed that there is an increase in Covid-19 cases and dead people since July 2021 due to a new variant of Covid-19, Delta.
+  * While the Covid-19 cases reduced in April 2021 - June 2021, the number of daily vaccination reduced as well.
+
+
+```{r date_vs_case_plot, warning=FALSE, echo=FALSE}
+  ggplot(data=US_dc_1, aes(x=date, y=cases))+geom_line(aes(color="cases"))+geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+geom_point(aes(y=deaths,color="deaths"))+
+    geom_line(data=vac_data_1, aes(y=us_daily_vaccinations,color="US_daily_vaccination"))+
+    geom_point(data=vac_data_1,aes(y=us_daily_vaccinations,color="US_daily_vaccination"))+
+    scale_y_log10()+
+    theme(legend.position="bottom",
+    axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in US", y= NULL)
+  
+```
+
+```{r new_case_new_death_global, echo=FALSE}
+
+  global_dc<-global_dc%>%
+  group_by(Country_Region)%>%  
+  mutate(new_cases=cases-lag(cases), new_deaths=deaths-lag(deaths))
+
+
+
+  global_dc_1<-global_dc%>%
+  group_by(Country_Region,date)%>%
+  summarise(cases=sum(new_cases), deaths=sum(new_deaths), Population=max(Population))%>%
+  mutate(death_per_mill=deaths*1000000/Population, case_per_mill=cases*1000000/Population)%>%
+  ungroup()
+
+  
+  global_dc_2<-global_dc_1%>%
+    filter(Country_Region=='Thailand')
+
+  
+
+  
+```
+## Thailand case
+
+  * I compared the results of the US with my homecountry, Thailand.
+  * Use global_dc, filter only Thailand, group by date
+  * Plot in line, which its x-axis is date and y-axis are Covid-19 cases and the number of deaths.
+  * the slope of both cases and deaths are much steeper compared to US due to Delta variant.
+  
+```{r date_vs_case in thai, warning=FALSE,echo=FALSE}
+
+  global_dc_2%>%
+  filter(cases>=0, deaths>=0)%>%
+  ggplot(aes(x=date, y=cases))+geom_line(aes(color="cases"))+
+  geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+
+  geom_point(aes(y=deaths,color="deaths"))+
+    scale_y_log10()+
+    theme(legend.position="bottom",
+    axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in Thailand", y= NULL)
+  
+```
+
+## US map plot for total Covid-19 cases, total dead people, and total fully vaccinated people
+  
+  * US_dc was used.
+  * Group by province states and country region.
+  * "total_cases" is the summation of "new_cases".
+  * "total_deaths" is the summation of "new_deaths".
+  * "total_cases_per_thou" is total cases per thousand of population, which was "total_cases" divided by "Population".
+  * "total_deaths_per_thou" is total deaths per thousand of population, which was "total_deaths" divided by "Population".
+  
+```{r usmap_plot}
+US_dc_2<-US_dc%>%
+  filter(new_cases>=0, new_deaths>=0)%>%
+  group_by(Province_State, Country_Region)%>%
+  summarise(total_cases=sum(new_cases), total_deaths=sum(new_deaths), 
+            total_cases_per_thou=total_cases*1000/max(Population),
+            total_deaths_per_thou=total_deaths*1000/max(Population))%>%
+  rename(state=Province_State)
+
+
+
+```
+
+```{r slice_max_case, echo=FALSE, results='hide'}
+maxcase<-US_dc_2%>%
+  filter(total_cases>0)%>%
+  arrange(desc(total_cases_per_thou))
+is.num <- sapply(maxcase, is.numeric)
+maxcase[is.num]<-lapply( maxcase[is.num], round,2)
+maxcase$total_cases=format(maxcase$total_cases,big.mark = ",")
+maxcase$total_deaths=format(maxcase$total_deaths,big.mark = ",")
+maxcase$total_cases_per_thou=format(maxcase$total_cases_per_thou,big.mark = ",", decimal.mark = ".")
+maxcase[1:10,]
+```
+## Covid-19 cases in the US
+
+  * Show top 10 max Covid-19 cases in the US.
+
+```{r tablemaxcase, echo=FALSE}
+kable(maxcase[1:10,], caption="Table for top 10 max case per thousand")
+```
+## US map plot for the cases in the US
+
+  * The data was shown in the US map plot.
+  * It's much clearer that the southern states such as Mississippi, Louisiana, and South Carolina have more cases than in the northern states.
+  
+```{r cases_per_thou, echo=FALSE}
+plot_usmap(data=US_dc_2, values='total_cases_per_thou', color='orange', labels = TRUE)+
+  scale_fill_continuous(low = "white", high = "orange", name = "total_cases_per_thou", label = scales::comma)
+```
+## 
+
+```{r deaths_per_mill, echo=FALSE}
+US_dc_3<-US_dc%>%
+  filter(new_cases>=0, new_deaths>=0)%>%
+  group_by(Province_State, Country_Region)%>%
+  summarise(total_cases=sum(new_cases), total_deaths=sum(new_deaths), total_cases_per_thou=total_cases*1000/max(Population),
+            total_deaths_per_thou=total_deaths*1000/max(Population))%>%
+  rename(state=Province_State)
+#View(US_dc_3)
+
+
+```
+## Covid-19 death in the US
+
+```{r slice_max_deaths, echo=FALSE}
+maxdeath<-US_dc_3%>%
+  filter(total_deaths>0)%>%
+  arrange(desc(total_deaths_per_thou))
+  is.num <- sapply(maxdeath, is.numeric)
+  maxdeath[is.num]<-lapply( maxdeath[is.num], round,2)
+  maxdeath$total_cases=format(maxcase$total_cases,big.mark = ",")
+  maxdeath$total_deaths=format(maxcase$total_deaths,big.mark = ",")
+  maxdeath$total_cases_per_thou=format(maxcase$total_cases_per_thou,big.mark = ",",decimal.mark = ".")
+```
+
+  * Show top 10 max Covid-19 death in the US.
+```{r tablemaxdeaths, echo=FALSE}
+kable(maxdeath[1:10,], caption="Table for top 10 max death per thousand")
+```
+## US map plot for the death in the US
+
+  * The data was shown in the US map plot.
+  * It's much clearer that the southern states such as Mississippi, Louisiana, and South Carolina has a higher death rate than in the northern states.
+  * However, New York and New Jersey still have high death rates in the same level as the southern state. 
+
+```{r deaths_per_thou}
+plot_usmap(data=US_dc_3, values='total_deaths_per_thou', color='orange', labels = TRUE)+
+  scale_fill_continuous(low = "white", high = "red", name = "total_deaths_per_thou", label = scales::comma)
+
+```
+
+#vaccination rate 
+
+```{r vac_per_thou, message=FALSE, warning=FALSE, echo=FALSE}
+vac_data_2<-vac_data%>%
+  group_by(location)%>%
+  summarise(people_fully_vaccinated_per_thou=
+              max(people_fully_vaccinated_per_hundred, na.rm = TRUE)*10)%>%
+  rename(state=location)
+#to remove -inf
+vac_data_2=vac_data_2[vac_data_2$people_fully_vaccinated_per_thou!=-Inf,]
+
+
+```
+
+## US map plot for the vaccination in the US
+
+  * Total vaccination was plotted in US map.
+  * The results showed that the northern states have a much higher vaccination rate.
+
+```{r vac_per_thou_plot, echo=FALSE}
+
+
+plot_usmap(data=vac_data_2, values='people_fully_vaccinated_per_thou', color='green', labels = TRUE)+
+  scale_fill_continuous(low = "white", high = "green", name = "vacci_per_thou", label = scales::comma)
+
+
+
+```
+
+
+```{r vac_slice_min, echo=FALSE}
+  is.num <- sapply(vac_data_uid_2, is.numeric)
+  vac_data_uid_2[is.num]<-lapply( vac_data_uid_2[is.num], round,2)
+  minvac<-vac_data_uid_2%>%
+  rename(full_vaccination_percent=percent_vaccine)%>%
+  arrange(full_vaccination_percent)
+  
+  minvac$people_fully_vaccinated=format( minvac$people_fully_vaccinated,big.mark = ",")
+  minvac$population=format( minvac$population,big.mark = ",")
+  
+```
+
+  * Looking back to see the percentage of fully vaccinated people in the southern states. 
+  * They have only 40% of total people.
+  * if more people are eager to have vaccination, the number of Covid-19 cases can be reduced.
+```{r tableminvac, echo=FALSE}
+kable(minvac[1:10,], caption="Table for top10 min fully vaccinated people")
+```
+
+
+
+```{r LA_data, echo=FALSE, message=FALSE}
+
+  la_vac_data<-vac_data%>%
+  filter(location=='Louisiana')
+
+  
+  US_dc_la<- US_dc%>%
+    filter(Province_State=='Louisiana', new_cases>=0,new_deaths>=0)%>%
+    group_by(Province_State,date)%>%
+    summarise(cases=sum(new_cases), deaths=sum(new_deaths))
+
+```
+
+```{r LA_Plot, warning=FALSE, echo=FALSE, fig.show='hide'}
+
+  ggplot(data=US_dc_la, aes(x=date, y=cases))+geom_line(aes(color="cases"))+geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+geom_point(aes(y=deaths,color="deaths"))+
+    geom_line(data=la_vac_data, aes(y=daily_vaccinations,color="daily_vaccinations"))+
+    geom_point(data=la_vac_data,aes(y=daily_vaccinations,color="daily_vaccinations"))+
+    scale_y_log10()+
+    theme(legend.position="bottom",
+    axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in Louisiana", y= NULL)
+  
+
+
+```
+
+```{r Mississippi_data,echo=FALSE, message=FALSE}
+
+  ms_vac_data<-vac_data%>%
+  filter(location=='Mississippi')
+
+  
+  US_dc_ms<- US_dc%>%
+    filter(Province_State=='Mississippi', new_cases>=0,new_deaths>=0)%>%
+    group_by(Province_State,date)%>%
+    summarise(cases=sum(new_cases), deaths=sum(new_deaths))
+
+```
+
+
+```{r New_Jersey_plot_data, warning=FALSE, echo=FALSE, message=FALSE}
+
+  nj_vac_data<-vac_data%>%
+  filter(location=='New Jersey')
+
+  
+  US_dc_nj<- US_dc%>%
+    filter(Province_State=='New Jersey', new_cases>=0,new_deaths>=0)%>%
+    group_by(Province_State,date)%>%
+    summarise(cases=sum(new_cases), deaths=sum(new_deaths))
+  
+
+
+```
+
+```{r New_Jersey_plot, warning=FALSE,echo=FALSE, fig.show='hide'}
+
+  ggplot(data=US_dc_nj, aes(x=date, y=cases))+geom_line(aes(color="cases"))+geom_point(aes(color="cases"))+
+  geom_line(aes(y=deaths,color="deaths"))+geom_point(aes(y=deaths,color="deaths"))+
+    geom_line(data=nj_vac_data, aes(y=daily_vaccinations,color="daily_vaccinations"))+
+    geom_point(data=nj_vac_data,aes(y=daily_vaccinations,color="daily_vaccinations"))+
+    scale_y_log10()+
+    theme(legend.position="bottom",
+    axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in New Jersey", y= NULL)
+  
+
+
+```
+
+```{r vac_percent_barchart_data, warning=FALSE, echo=FALSE}
+temp<-vac_data_uid_2%>%
+  arrange(percent_vaccine)%>%
+  mutate(Province_State=factor(Province_State))
+
+vac_data_uid_3=temp[,]
+
+
+
+```
+
+## The percent of fully vaccinated people in each state
+
+  * The number of fully vaccinaed people in percent were arranged from high to low.
+  * In most high cases, the percent of vaccination is around 60% of population, while the low cases are 40% of population.
+  * There is a room to improve the immunity among the low vaccination states.
+  
+```{r vac_percent_barchart_data_1, warning=FALSE, echo=FALSE}
+
+ggplot(data=vac_data_uid_3, aes(x=fct_reorder(Province_State, percent_vaccine), y=percent_vaccine))+geom_bar(width=0.4, stat="identity")+theme(legend.position="bottom",text=element_text(size=7),
+    axis.text.x = element_text(angle = 45))+
+  scale_x_discrete(guide=guide_axis(n.dodge = 2))+coord_flip()+xlab('Province State')+ylab('The Number Of Vaccination %')  
+
+
+
+```
+
+```{r vac_pop_density, warning=FALSE, echo=FALSE}
+vac_uid_3<-vac_data_uid_2%>%
+  rename(state=Province_State)
+
+pop_den<-area%>%
+  left_join(vac_uid_3)%>%
+  rename(area=`area (sq. mi)`)%>%
+  mutate(pop_density=population/area)%>%
+  filter(state!='District of Columbia')
+
+
+
+```
+
+## Population density
+
+  * Use vac_data and uid.
+  * Use left join between them.
+  * Use area from area table as mentioned before.
+  * Population density is population in each state divided by area.
+  * High population density areas are in New York, New Jersey, California, and Florida.
+
+```{r pop_density, echo=FALSE}
+
+
+plot_usmap(data=pop_den, values='pop_density', color='black', labels = TRUE)+
+  scale_fill_continuous(low = "white", high = "red", 
+                        name = "population_density", label = scales::comma)
+
+
+
+```
+
+# Model
+
+  * Using linear regression model to predict the results between total deaths and fully vaccinated people. 
+  * Using the geom_smooth(method='lm')
+  * The result shows that the more fully vaccinated people, the less death rate.
+  * New York and New Jersey are outliers. The reason is that their population density is so high.
+  
+
+```{r lmmodel_data_prep, warning=FALSE, echo=FALSE}
+
+vac_data_3<-vac_data%>%
+  group_by(location)%>%
+  summarise(people_fully_vaccinated_per_thou=
+              max(people_fully_vaccinated_per_hundred, na.rm = TRUE)*10)%>%
+  rename(state=location)
+
+vac_data_3=vac_data_3[vac_data_3$people_fully_vaccinated_per_thou!=-Inf,]
+
+vac_data_4<-vac_data_3%>%
+  left_join(US_dc_3)%>%
+  na.omit()
+
+```
+```{r lmmodel_data_plot, warning=FALSE, echo=FALSE}
+
+ggplot(data=vac_data_4, aes(x=total_deaths_per_thou,y= people_fully_vaccinated_per_thou))+geom_point()+ 
+  geom_smooth(method='lm')+geom_text(aes(label=state))+ylab('Fully vaccinated people per thousand')+xlab('Total dead people per thousand')
+
+```
+
+```{r lmmodel, warning=FALSE, echo=FALSE, fig.show='hide'}
+
+mod <- lm(people_fully_vaccinated_per_thou ~ total_deaths_per_thou, data = vac_data_4)
+summary(mod)
+
+```
+```{r predict, warning=FALSE, echo=FALSE, fig.show='hide'}
+
+vac_data_4$predlm=predict(mod)
+
+
+ggplot(data=vac_data_4, aes(x=total_deaths_per_thou,y= people_fully_vaccinated_per_thou))+geom_point()+ 
+ geom_line(aes(y = predlm), size = 1)+geom_text(aes(label=state))
+
+```
+```{r upr_lwr, warning=FALSE, echo=FALSE, fig.show='hide'}
+
+modlm = predict(mod, interval = "confidence")
+vac_data_4_lm=cbind(vac_data_4,modlm)
+head(vac_data_4_lm)
+```
+```{r predict_lwr_upr, warning=FALSE, echo=FALSE, fig.show='hide'}
+
+vac_data_4$predlm=predict(mod)
+
+
+ggplot(data=vac_data_4_lm, aes(x=total_deaths_per_thou,y= people_fully_vaccinated_per_thou))+geom_point()+ 
+ geom_line(aes(y = predlm), size = 1)+geom_text(aes(label=state))+geom_ribbon(aes(ymin = lwr, ymax = upr, color = NULL), alpha = .15)
+
+```
+
+# Conclusion
+
+  1.    The number of Covid-19 patients in the US slightly increased since July 2021 because of the new variant of Covid-19, Delta. However, the results in US compared to Thailand, the US has lower increases in Covid-19 cases than Thailand.
+  
+  2.    The top 10 of Covid-19 patients are in the southern states of the US. The reason is that they have a lower percentage of fully vaccination compared to the northern states.
+  
+  3.    Top top 10 of death rate conformed with the Covid-19 cases. The more cases the US has, the more death rates the US has to deal with.
+  
+  4.    The southern states which has low pecentage of full vaccinated people only 40% of the population, while the northern states have 60%.
+  
+  5.    According to the model, the more full vaccination the US has, the lower death rate the US gets. Although New York and New Jersey have high vaccinated rates, they still have high death rates because of their high population density.
+  
+# Bias
+
+  1.    The percentage of tested people in each area is not the same, it will directly lead to wrong cases.
+  
+  2.    The number of facilities such hospitals and medical equipment is not the same in each area, which can lead to high death rate.
+  
+  3.    The system used to count the number of cases and death rate is different in each state.
+  
+  4.    The number of immigrants can have an impact on the death rate and Covid-19 cases because immigrants will face many obstacles to access hospital services.
+  
+  
